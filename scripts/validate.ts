@@ -1,0 +1,56 @@
+// Validate guide JSON files against the schema.
+// Usage: node scripts/validate.ts [file...]   (default: every file in src/data/guides)
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { Guide, ownerLeaks, scopeWarnings } from "../src/lib/guide.ts";
+
+const dir = "src/data/guides";
+const files = process.argv.slice(2).length
+  ? process.argv.slice(2)
+  : readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => join(dir, f));
+
+let failed = 0;
+for (const file of files) {
+  const data = JSON.parse(readFileSync(file, "utf8"));
+  const res = Guide.safeParse(data);
+  if (!res.success) {
+    failed++;
+    console.log(`FAIL ${file}`);
+    for (const issue of res.error.issues.slice(0, 20)) console.log(`  ${issue.path.join(".")}: ${issue.message}`);
+    continue;
+  }
+  // Every cited source id must exist.
+  const ids = new Set(res.data.sources.map((s) => s.id));
+  const missing = new Set<string>();
+  JSON.stringify(res.data, (k, v) => {
+    if (k === "sourceIds") for (const id of v as string[]) if (!ids.has(id)) missing.add(id);
+    return v;
+  });
+  if (missing.size) {
+    failed++;
+    console.log(`FAIL ${file}: unknown source ids ${[...missing].join(", ")}`);
+    continue;
+  }
+  // Guides must read correctly for any developer: no Iskaria/clinic situation baked into the guidance.
+  // Allowed only as evidence of a real test: inside sources, meta and evidence.note.
+  const leaks = ownerLeaks(res.data);
+  if (leaks.length) {
+    failed++;
+    console.log(`FAIL ${file}: developer-specific wording (/iskaria|clinic/i) outside sources/meta/evidence.note`);
+    for (const l of leaks.slice(0, 20)) console.log(`  ${l}`);
+    continue;
+  }
+  // Scope names must be scope strings. Seeds (src/data/guides) fail on it; other files (live guides) only warn.
+  const bad = scopeWarnings(res.data);
+  if (bad.length) {
+    const seed = file.split(String.fromCharCode(92)).join("/").includes("src/data/guides/");
+    console.log(`${seed ? "FAIL" : "WARN"} ${file}`);
+    for (const b of bad.slice(0, 20)) console.log(`  ${b}`);
+    if (seed) {
+      failed++;
+      continue;
+    }
+  }
+  console.log(`ok   ${file} (${res.data.steps.length} steps, ${res.data.sources.length} sources)`);
+}
+process.exit(failed ? 1 : 0);

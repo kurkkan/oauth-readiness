@@ -1,0 +1,119 @@
+<!-- BEGIN:nextjs-agent-rules -->
+
+## This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->
+
+# OAuth Readiness: handoff for the next agent
+
+Last updated 2026-11-02. Read this, then `README.md` (product story, decisions, evidence) before changing anything.
+
+## What this is
+
+A take-home project that became a real tool: guides that tell a developer building an AI agent how long a provider OAuth
+app takes to get approved, what it needs, what can block it, and which steps an agent can do. Three ways in:
+
+- **Website** `https://oauth-readiness-five.vercel.app` (Vercel project `oauth-readiness`; NOT `oauth-readiness.vercel.app`,
+  that is someone else's). Library of 8 researched guides + live generation (`/generate?q=<app>`).
+- **MCP server** `/api/mcp` (Streamable HTTP, no auth, `mcp-handler` 2.x + `@modelcontextprotocol/server` 2.x). Tools:
+  `list_guides`, `get_guide`, `get_setup_plan` (guide -> browser-agent instructions, fields resolved against a profile,
+  STOP points, rules), `get_profile`, `research_app` (starts the live agent in the background and returns at once) +
+  `get_research_status` (poll), `report_issue` (agents report console changes / wrong facts / "worked"). Add to Claude Code:
+  `claude mcp add --transport http oauth-readiness https://oauth-readiness-five.vercel.app/api/mcp`.
+- **Setup agents**: `scripts/setup-github.ts` (GitHub App Manifest flow, Playwright; only dry-run tested, the live run timed
+  out waiting for sign-in) and the proven path: Claude Code + this MCP + Claude in Chrome in the owner's signed-in browser
+  (done for Google on 2026-10-30, see below).
+
+Repo `github.com/kurkkan/oauth-readiness`, branch `main`. The live site is deployed by a separate Vercel Git connection; pushes here do not deploy it on their own.
+Deliverables: the live link, this repo and README.
+
+## Code map
+
+| Path | What |
+|---|---|
+| `src/lib/guide.ts` | zod `Guide` schema shared by seeds, live agent, UI and MCP. Every claim has `evidence` tested/sourced/inferred |
+| `src/data/guides/*.json` | 8 seed guides (github, google-gmail, google-search-analytics, hubspot, linkedin, meta, microsoft-graph, slack). `node scripts/validate.ts` checks schema + source ids |
+| `src/data/profile/iskaria.json` | developer profile (Iskaria, public facts only). `{provider}` in values is filled per guide |
+| `src/lib/agent.ts` | live agent: research (Opus 5.5, web_search/web_fetch server tools + local `probe_oauth`, 140 s budget, forced wrap-up) then compose (streamed JSON, zod-validated, one repair round) |
+| `src/lib/probe.ts` | credential-free endpoint probe: RFC 8414 / OIDC discovery, PKCE, dynamic client registration, authorize error shape |
+| `src/lib/plan.ts` | `buildPlan()`: guide -> setup plan for a browser agent; `BROWSER_RULES` (never type secrets, stop at STOP steps, reload and read back after every save) |
+| `src/lib/r2.ts` | R2 client: S3 API with SigV4 via node:crypto, no SDK (`r2Get` null on 404, `r2Put`, `r2List` first 1000 keys) |
+| `src/lib/jobs.ts` | Async research: `startJob()` writes `jobs/<slug>.json` (status running/done/error, step, counts), runs `generateGuide` in Next `after()` with throttled progress writes; one job per slug (a second call returns it, no daily slot); running >6 min with no update counts as failed. `RESEARCH_STUB=1` swaps in a fake generator, ignored when NODE_ENV=production |
+| `src/lib/feedback.ts` | `report_issue` storage: `feedback/<slug>/<ts>-<rand>.json`, 2000-char limit, secret-pattern rejection, 200 reports/day, `recentReports()` for the guide page "Reports from setup agents" section |
+| `src/lib/store.ts` | seeds from disk; live guides in R2 (`guides/<slug>.json`), `.data/guides` locally; also a small kv layer (`kvGet/kvPut/kvList`, R2 or `.data/`) for jobs, feedback and counters, and `resolveSlug()` fuzzy matching (exact / alias / first-word; "google-drive" is ambiguous -> candidates, never a wrong Google guide); `takeGenerationSlot` daily cap (`DAILY_GENERATION_LIMIT`, default 40) |
+| `src/app/api/generate/route.ts` | SSE stream of agent events, `maxDuration` 300 |
+| `src/app/api/mcp/route.ts` | MCP server. Tool descriptions steer the agent: list_guides -> get_profile {template:true} -> get_setup_plan {slug, profile}. Slugs are normalised + aliased (`normalizeSlug` in `store.ts`: gmail, outlook, Slack...). A browser GET returns the install page (`installHtml`) instead of a 405 |
+| `src/lib/install.ts` | ONE source for the per-client install snippets (Claude Code, Cursor + deeplink, VS Code + deeplink, Codex, Windsurf), the copy-paste agent prompt, `/llms.txt` and the `/api/mcp` HTML page. Change the MCP URL here only |
+| `src/lib/profile.ts` | `PROFILE_FIELDS` (keys a stranger fills; `required`, `list`), `profileTemplate()`, `parseProfile()` (object or JSON string). With a custom profile an absent key counts as missing |
+| `src/lib/plan.ts` + `src/lib/verify-script.ts` | (2026-11-02) `buildPlan` modes: own `profile` -> "yours"; none -> "none" (every profile-backed field `missing`, top-level `next` says call get_profile {template:true}); `example: true` -> Iskaria's data. `verify` is an object: authorize URL, optional `redirectNote`, and `verifyScript` (self-contained Node 20+ script: localhost callback, code exchange honouring clientAuth/PKCE, one test call, prints no tokens; `verifyScript: false` omits it). Needs the optional `oauth` block of the guide (`OAuthInfo` in `guide.ts`: endpoints, pkce, clientAuth, scopeSeparator, extraAuthorizeParams, refreshTokens, testApiCall); without it `verify` falls back to a sentence. api-key providers get `<PROVIDER>_API_KEY` |
+| non-standard providers (2026-11-02) | `oauth.authType` also `oauth1`/`custom`; `clientAuth: secret_key` (code exchanged with the platform's sk_ key as Bearer, Stripe); `noScopeParam`; `credentials[{env,what}]` (what the developer stores); `placeholders[{name,about,env}]` for `{shop}`/`{realmId}`/`{api_domain}` in URLs (older guides: any `{xxx}` in an endpoint URL gets `PROVIDER_XXX`). `buildPlan`: only `oauth2`/`oauth2-pkce-only` get a client id/secret pair, authorize URL and verifyScript; api-key/oauth1/custom/other get a summary + `testApiCall` (oauth1: library, HMAC-SHA1). `inputs` + `missing` list placeholders; the script exits with a clear message when their env is unset. Test-URL scopes: basic/sensitive tier only, split, `^[\w.:/-]+$`, no `bot`; `verify.scopeNote` says what was left out. Web steps without `url` get the previous step's page or the provider home with `urlGuessed: true`. Scopes/Permissions fields with no profileKey are filled from the guide; `developerContactEmail` falls back to `supportEmail`; `launch` summary when launch phase is excluded. `scopeWarnings()` (guide.ts): validate.ts fails seeds, warns for live guides; skipped when `noScopeParam` (GitHub App permission labels). Aliases: twitter, stripe-connect, quickbooks, intuit |
+| `src/components/agent-panel.tsx` | "Set it up with your coding agent" panel (home `#agent`, every guide page): client tabs, copy buttons, prompt |
+| `scripts/` | `validate.ts`, `probe.ts`, `setup-github.ts`, `push-live.ts` (push a local `.data` guide to R2, reads it back). Run with `node` (type stripping) |
+
+Env (`.env.example`): `ANTHROPIC_API_KEY` (Vercel has it, unquoted; `.env.local` has it quoted, the code strips quotes),
+`R2_ENDPOINT` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET`, `DAILY_GENERATION_LIMIT`, `NTFY_TOPIC` / `NOTIFY_WEBHOOK` (setup-agent handoff pings).
+Secrets never in git: `.secrets/`, `.auth/`, `.data/`, `.env*` are git-ignored AND in `.vercelignore` (a locked Chrome profile
+in `.auth/` once made every CLI deploy fail silently with EBUSY).
+
+## State and open problems (in priority order)
+
+1. **Live guides moved to Cloudflare R2 (2026-10-30).** Vercel Blob (Hobby) blocked the store over quota (every read 403),
+   so live guides now go to the PRIVATE R2 bucket `oauth-readiness-guides`, with an API token limited to Object Read & Write
+   on that bucket. Env `R2_*` set in Vercel Production + Preview and `.env.local`. Live guides in R2 (2026-11-02): calendly,
+   notion, xero, zoom, dropbox, asana, shopify, quickbooks-online, airtable, pipedrive, discord, x-twitter, linear, stripe
+   (Stripe Apps route), openai (api-key), trello (Atlassian OAuth2 route; classic key+token only mentioned). Previews write to
+   the same bucket. `ANTHROPIC_API_KEY` is set for Preview on branch `integrate` only. Account details: `AGENTS.local.md`
+   (git-ignored, owner's machine only).
+2. **Live guides are neutral (2026-11-01).** The live agent no longer sees the Iskaria profile: it writes for any developer,
+   and `ownerLeaks()` (`guide.ts`, shared with `validate.ts`) sends Iskaria/clinic wording back for one rewrite round.
+   calendly, notion, zoom and xero were regenerated on production with it (0 leaks; xero's 5/50 connection tiers consistent).
+   Local `next dev` with `.env.local` writes to the production R2 bucket.
+3. 8 guides, not 100. The scale path: batch `research_app` runs + a human review queue; seeds were researched by parallel
+   agents following `docs/research-brief.md`, then checked by a separate verifier.
+4. Save the Google console flow to the browser-flows library (`~/.claude/scripts/browser-flows/`, see the `browser-fast`
+   skill) so the next Google setup is a replay. Steps and selectors are in "Google end to end" below.
+5. Usability pass 2026-10-30 (branch `agent-ux`): two review agents (Krug/Norman audit of the site; an AI-developer walk through
+   the MCP). Done: agent panel + nav link, library before Generate, clickable rows with mobile labels, jump nav, readiness
+   relabelled as Iskaria's example, live-run stepper + retry, re-run confirmation, `/llms.txt`, stranger profiles in
+   get_setup_plan (missing keys, arrays, env names, verify), guides neutralised (`validate.ts` fails on Iskaria/clinic outside
+   sources/meta/evidence notes). Not done: `research_app` is unauthenticated (shared daily cap); evidence chips still use
+   `title` tooltips (invisible on touch).
+6. **Generality pass 2026-11-02 (live on main).** async `research_app` (verified on Vercel: returns in ~2 s, `after()` finishes
+   the run), no-profile plans fill nothing, `oauth` endpoints block + `verifyScript`, non-standard auth types, placeholders,
+   scope filtering. A 10-provider evaluation (Shopify, QuickBooks, Airtable, Pipedrive, Discord, X, Linear, Stripe, OpenAI,
+   Trello) drove it; all 16 eval/live guides re-researched in the new format. Open: Stripe Connect has no guide (alias ->
+   Stripe Apps); Trello key+token route; the job lock is not atomic.
+
+## GitHub end to end (2026-11-02)
+
+Plan from production `get_setup_plan("github")` with a stranger-style profile; Claude in Chrome filled the GitHub App form
+(flow saved: `~/.claude/scripts/browser-flows/github-app-create.js`); the human did sudo confirm, Create GitHub App, client
+secret, Authorize. The plan's `verifyScript` (`node --env-file=.env verify.mjs`): PKCE exchange OK, expiring token + refresh
+token, `GET /user` 200. App "OAuth Readiness Demo" on the owner's account (private key in `~/.secrets/`, unused).
+
+## Google end to end (the proof case, 2026-10-30)
+
+Claude Code fetched `get_setup_plan("google-search-analytics")` from production MCP and filled Google Auth Platform for
+Iskaria's Google Cloud project in the owner's signed-in Chrome (Claude in Chrome). Then "Connect Google" in the Iskaria console
+read live Business Profile, Search Console and GA4 data. Project and browser-profile details: `AGENTS.local.md`.
+
+Lessons (all in the Google guide and `plan.ts` already):
+- `business.manage` and `webmasters.readonly` are non-sensitive; only `analytics.readonly` needs verification.
+- User support email = the signed-in account or a Google Group it manages.
+- New client option "Use this client for an AI-powered agent"; Google wants separate clients for agent and normal flows.
+- Unsaved console forms vanish on navigation; one "saved" Branding page kept only the domain. Reload and read back.
+- The logo upload input is hidden: a browser agent has to set the file input from script.
+- Brand verification is automatic (passed in about 2 minutes), then "Publish branding".
+- The extension may not act on accounts.google.com: sign-in and consent are always the human's.
+
+## How to work here
+
+- `npm run dev` (port 3000; the old session used 3100), `npx tsc --noEmit`, `npx eslint`, `node scripts/validate.ts`,
+  `npx next build` before pushing. Next.js 16: `await connection()` instead of `dynamic`, `PageProps` with Promise params.
+- Machine: Windows, `py` not `python`, no `jq`, built-in WebSearch does not work (use the deepseek-web MCP).
+- Never print or commit keys. Profile data stays public facts only (no Iskaria project numbers, client ids, third-party emails).
+- Update this file as you go: delete what stops being true.

@@ -1,0 +1,187 @@
+import { z } from "zod";
+
+// One schema is shared by the seeded library, the live research agent and the UI.
+// Every factual claim carries `evidence`: what supports it and how strongly.
+
+export const Evidence = z.object({
+  status: z
+    .enum(["tested", "sourced", "inferred"])
+    .describe(
+      "tested = we did it ourselves (setup attempt, real console); sourced = an official doc or provider page says so (cite it); inferred = reasoning or third-party reports only, treat as uncertain",
+    ),
+  sourceIds: z.array(z.string()).describe("ids from the guide's sources[]"),
+  note: z.string().optional().describe("what exactly was tested or what is unclear"),
+});
+
+export const Source = z.object({
+  id: z.string().describe("short id, e.g. s1"),
+  title: z.string(),
+  url: z.string(),
+  kind: z.enum(["official-docs", "provider-policy", "provider-console", "community", "our-test"]),
+  quote: z.string().optional().describe("short verbatim quote that supports the claim"),
+  accessed: z.string().describe("YYYY-MM-DD"),
+});
+
+export const Who = z
+  .enum(["agent", "you", "agent-then-you"])
+  .describe("agent = an agent can do it unattended; you = a human must (login, legal, payment, judgement); agent-then-you = agent prepares/fills, human reviews and submits");
+
+export const Step = z.object({
+  title: z.string(),
+  who: Who,
+  phase: z.enum(["build", "test", "launch"]).describe("build = create the app and credentials; test = works for you and test users; launch = review/approval for real users"),
+  detail: z.string().describe("concrete instructions: where to click, what to enter"),
+  url: z.string().optional().describe("deep link to the console page, if known"),
+  estimate: z.string().describe("hands-on time, e.g. '5 min'"),
+  // Form fields the step asks for, mapped to the developer profile when possible.
+  fields: z
+    .array(
+      z.object({
+        label: z.string().describe("field label as the provider names it"),
+        profileKey: z.string().optional().describe("key in the developer profile that answers it, e.g. privacyPolicyUrl"),
+        note: z.string().optional(),
+      }),
+    )
+    .optional(),
+  evidence: Evidence,
+});
+
+export const Scope = z.object({
+  name: z.string().describe("scope/permission string as the provider names it"),
+  purpose: z.string().describe("what the developer's agent would use it for"),
+  tier: z.enum(["basic", "sensitive", "restricted", "partner-only", "paid"]).describe("how much review it triggers"),
+  note: z.string().optional(),
+  evidence: Evidence,
+});
+
+export const Blocker = z.object({
+  title: z.string(),
+  detail: z.string(),
+  severity: z.enum(["info", "slows-you-down", "can-block-launch"]),
+  workaround: z.string().optional(),
+  evidence: Evidence,
+});
+
+// The facts a developer's code needs to run the OAuth flow, so a setup plan can also verify the app end to end.
+// Optional: guides written before this field existed (live guides in R2) still parse.
+export const OAuthInfo = z.object({
+  authType: z
+    .enum(["oauth2", "oauth2-pkce-only", "oauth1", "api-key", "custom", "other"])
+    .describe("oauth2 = standard authorization-code flow. oauth1 = OAuth 1.0a (request signing, needs a library). api-key = the developer's own key/token, no per-user authorization flow (the steps then describe creating a key). custom = a provider-specific flow that is not standard OAuth2 (describe it in the steps). other = unclear"),
+  authorizeUrl: z.string().optional().describe("authorization endpoint, https"),
+  tokenUrl: z.string().optional().describe("token endpoint, https"),
+  revokeUrl: z.string().optional(),
+  pkce: z.enum(["required", "supported", "unsupported", "unknown"]),
+  clientAuth: z
+    .enum(["client_secret_post", "client_secret_basic", "secret_key", "none", "unknown"])
+    .describe("how the token endpoint wants the client credentials. secret_key = no client secret: the code is exchanged with the platform's own secret API key (Stripe Connect: Authorization: Bearer sk_...)"),
+  noScopeParam: z.boolean().optional().describe("true if the authorize URL must NOT carry a scope parameter (permissions come from the app manifest/settings, e.g. Stripe Apps, GitHub Apps)"),
+  credentials: z
+    .array(z.object({ env: z.string().describe("env var name, e.g. STRIPE_SECRET_KEY"), what: z.string().describe("what the developer stores there, and where it comes from") }))
+    .optional()
+    .describe("what the developer stores for this provider. Omit for plain client id + client secret"),
+  placeholders: z
+    .array(z.object({ name: z.string().describe("name as written in the URLs, without braces, e.g. shop"), about: z.string().describe("what the developer must supply, e.g. the store's myshopify subdomain"), env: z.string().describe("env var name for it, e.g. SHOPIFY_SHOP") }))
+    .optional()
+    .describe("{name} parts inside the authorize/token/test URLs that differ per account (Shopify {shop}, QuickBooks {realmId}, Pipedrive {api_domain})"),
+  scopeSeparator: z.enum([" ", ","]).optional().describe("default is a space"),
+  extraAuthorizeParams: z.record(z.string(), z.string()).optional().describe("e.g. {access_type:'offline', prompt:'consent'} or {token_access_type:'offline'}"),
+  refreshTokens: z.string().describe("short, e.g. 'yes, rotating; offline scope needed'"),
+  testApiCall: z
+    .object({ method: z.enum(["GET", "POST"]), url: z.string(), note: z.string().optional() })
+    .optional()
+    .describe("one cheap call that proves the token works, e.g. a /me endpoint"),
+  dynamicRegistration: z.boolean().optional(),
+  evidence: Evidence,
+});
+
+export const Guide = z.object({
+  slug: z.string(),
+  app: z.string().describe("provider/app name, e.g. Google (Gmail API)"),
+  website: z.string(),
+  category: z.string().describe("e.g. Email, CRM, Chat, Dev tools"),
+  summary: z.string().describe("2-3 sentences a developer can forward: how hard, how long, main catch"),
+  verdict: z.object({
+    difficulty: z.enum(["easy", "moderate", "hard", "gated"]).describe("gated = needs a partnership, paid tier or invitation before you can launch"),
+    timeToFirstToken: z.string().describe("SHORT (max ~20 chars): hands-on time until your own account can connect, e.g. '15 min'"),
+    timeToLaunch: z.string().describe("SHORT (max ~20 chars): realistic calendar time until arbitrary users can connect, including review waits, e.g. '3-6 weeks'"),
+    launchNote: z.string().optional().describe("one sentence on what the launch range depends on (scope choice, paths, resubmissions)"),
+    reviewRequired: z.string().describe("one short sentence: what review/approval stands between test and launch, or 'none'"),
+    cost: z.string().describe("SHORT (max ~30 chars), e.g. 'free', 'USD 540+/yr (CASA)'"),
+    costNote: z.string().optional().describe("detail behind the cost, if any"),
+    evidence: Evidence,
+  }),
+  // What you can do before review, and the limits of that state.
+  testMode: z.object({
+    available: z.boolean(),
+    limits: z.string().describe("e.g. '100 test users, refresh tokens expire after 7 days'"),
+    evidence: Evidence,
+  }),
+  prerequisites: z
+    .array(
+      z.object({
+        item: z.string(),
+        profileKey: z.string().optional().describe("developer-profile key that satisfies it"),
+        requiredFor: z.enum(["build", "launch"]),
+        evidence: Evidence,
+      }),
+    )
+    .describe("accounts, URLs, assets and verifications the provider requires"),
+  oauth: OAuthInfo.optional(),
+  steps: z.array(Step),
+  scopes: z.array(Scope).describe("the scopes a typical agent integration needs, with review tier"),
+  blockers: z.array(Blocker).describe("nuances that can delay or block approval"),
+  agentHandoff: z.object({
+    agentCan: z.array(z.string()),
+    youMust: z.array(z.string()),
+  }),
+  uncertainties: z.array(z.string()).describe("what we could not verify; be specific"),
+  sources: z.array(Source),
+  meta: z.object({
+    generatedBy: z.enum(["seed-research", "live-agent"]),
+    generatedAt: z.string(),
+    verification: z
+      .array(
+        z.object({
+          claim: z.string(),
+          method: z.string().describe("how it was checked: fetched doc X, created app in console, ..."),
+          result: z.enum(["confirmed", "corrected", "unverified"]),
+          note: z.string().optional(),
+        }),
+      )
+      .describe("spot checks of this guide's claims"),
+  }),
+});
+
+export type Guide = z.infer<typeof Guide>;
+export type Evidence = z.infer<typeof Evidence>;
+export type OAuthInfo = z.infer<typeof OAuthInfo>;
+export type Step = z.infer<typeof Step>;
+
+// Guides must read correctly for any developer: no owner (Iskaria/clinic) situation baked into the guidance.
+// Allowed only as evidence of a real test: inside sources, meta and evidence.note. Used by validate.ts and the live agent.
+const OWNER = /iskaria|clinic/i;
+export function ownerLeaks(value: unknown, path: (string | number)[] = []): string[] {
+  if (path[0] === "sources" || path[0] === "meta") return [];
+  if (typeof value === "string") {
+    const isEvidenceNote = path.at(-1) === "note" && path.at(-2) === "evidence";
+    return !isEvidenceNote && OWNER.test(value) ? [`${path.join(".")}: ${value.slice(0, 120)}`] : [];
+  }
+  if (Array.isArray(value)) return value.flatMap((v, i) => ownerLeaks(v, [...path, i]));
+  if (value && typeof value === "object") return Object.entries(value).flatMap(([k, v]) => ownerLeaks(v, [...path, k]));
+  return [];
+}
+
+// ---- Scope strings ---------------------------------------------------------------------------------------------
+// Scope entries must be real scope strings ("repo", "https://www.googleapis.com/auth/gmail.readonly", "chat:write"), not
+// prose or UI labels ("Issues: Read & write"). "openid email" holds two; split before testing.
+export const SCOPE_STRING = /^[\w.:/-]+$/;
+export const isScopeString = (name: string) => name.trim().split(/\s+/).every((p) => SCOPE_STRING.test(p));
+export function scopeWarnings(g: Guide): string[] {
+  // noScopeParam: permissions are settings/manifest labels (GitHub App "Issues: Read & write"), not authorize-URL scopes.
+  if (g.oauth?.noScopeParam) return [];
+  return g.scopes.filter((s) => !isScopeString(s.name)).map((s) => `scope "${s.name}" is not a scope string (prose or a UI label)`);
+}
+
+// {name} left in an endpoint URL.
+export const urlPlaceholders = (url?: string) => [...new Set([...(url ?? "").matchAll(/\{(\w+)\}/g)].map((m) => m[1]))];
