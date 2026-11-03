@@ -3,7 +3,7 @@
 **How long it really takes to get an OAuth app approved with each provider, what it needs, what can block it, and an agent that sets
 it up for you.** Built for developers whose AI agent has to connect to Gmail, Slack, HubSpot, Meta and the rest.
 
-**Live:** https://oauth-readiness-five.vercel.app · **MCP:** `https://oauth-readiness-five.vercel.app/api/mcp` · **For agents:** [`/llms.txt`](https://oauth-readiness-five.vercel.app/llms.txt)
+**Live:** https://oauth-readiness-five.vercel.app · **Demo video (60 s):** [watch](https://oauth-readiness-five.vercel.app/#demo) · **MCP:** `https://oauth-readiness-five.vercel.app/api/mcp` · **For agents:** [`/llms.txt`](https://oauth-readiness-five.vercel.app/llms.txt)
 
 ## Try it in two minutes
 

@@ -59,8 +59,30 @@ export default async function Home() {
         </p>
         <div className="mt-5 flex flex-wrap gap-3 no-print">
           <a href="#library" className="btn">Pick a provider</a>
+          <a href="#demo" className="btn-sm self-center">Watch the 60-second demo</a>
           <a href="#agent" className="btn-sm self-center">Set it up with your agent →</a>
         </div>
+      </section>
+
+      <section className="mt-10 max-w-3xl scroll-mt-6" id="demo">
+        <div className="flex items-baseline justify-between mb-3">
+          <h2 className="text-lg font-semibold">See it in 60 seconds</h2>
+          <a href="/demo.mp4" className="text-xs text-muted hover:text-accent">Open the video file</a>
+        </div>
+        <video
+          className="panel w-full aspect-video bg-soft"
+          src="/demo.mp4"
+          poster="/demo-poster.jpg"
+          controls
+          playsInline
+          preload="none"
+        >
+          <a href="/demo.mp4">Download the demo video</a>
+        </video>
+        <p className="mt-2 text-xs text-muted">
+          A coding agent asks for an unlisted provider, the live research agent writes the guide, then the setup plan fills a real GitHub App
+          form and stops where a human has to act. Verdicts, research and the token test are real; the browser part is a human-paced replay.
+        </p>
       </section>
 
       <section className="mt-10" id="library">
